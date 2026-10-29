@@ -8,11 +8,11 @@ A custom Discord Rich Presence plugin using **python**
 
 # Initial steps
 
-### 1. Create a Discord application from the [Discord Developer Portal](https://discord.com/developers/applications)
+1. Create a Discord application from the [Discord Developer Portal](https://discord.com/developers/applications)
 
     - Adjust to your liking how it's displayed on Discord
 
-### 2. Set up your development enviroment
+2. Set up your development enviroment
 
     ```
     pip install pypresence psutil
@@ -21,7 +21,7 @@ A custom Discord Rich Presence plugin using **python**
 
     `pypresence` is an independent lightweight library that communicates with the local Discord client
 
-### 3. Configure Davinci Resolve Scripting Environment
+3. Configure Davinci Resolve Scripting Environment
 
     a. Open DaVinci Resolve.
 
@@ -32,7 +32,7 @@ A custom Discord Rich Presence plugin using **python**
     d. Ensure your system environment variables point correctly to the Resolve scripting libraries so Python can import DaVinciResolveScript
 
 
-### 4. Enjoy your Davinci Resolve Rich Presence!
+4. Enjoy your Davinci Resolve Rich Presence!
 
 ## How heavy is it?
 

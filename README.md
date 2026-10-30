@@ -43,6 +43,12 @@ A custom Discord Rich Presence plugin using **python**
 Note: if you want the script to be standalone without needing to keep a CMD or Terminal open, bundle it into an exe with PyInstaller
 
 ```
+pip install pyinstaller
+```
+
+then 
+
+```
 pyinstaller --noconsole --onefile resolve_rpc.py
 ```
 ---

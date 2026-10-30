@@ -40,7 +40,7 @@ def configure_resolve_paths():
 configure_resolve_paths()
 
 try:
-    import DavinciResolveScript as dvr_script
+    import DaVinciResolveScript as dvr_script
 except ImportError as error:
     logger.warning("DaVinci Resolve scripting modules are unavailable: %s", error)
     dvr_script = None
@@ -48,12 +48,15 @@ except ImportError as error:
 def get_resolve_activity():
     """Return the current project name and Resolve page, if available."""
     if dvr_script is None:
-        return "No Project Open", "Editing"
+        return "No Project Open", "Editing", "Resolve scripting module unavailable"
 
     try:
         resolve = dvr_script.scriptapp("Resolve")
         if not resolve:
-            return "No Project Open", "Editing"
+            return "No Project Open", "Editing", (
+                "Resolve scripting is not accessible. Enable External scripting in "
+                "Preferences > System > General."
+            )
 
         project_name = "No Project Open"
         project_manager = resolve.GetProjectManager()
@@ -66,10 +69,11 @@ def get_resolve_activity():
         if not isinstance(page, str) or not page:
             page = "Editing"
 
-        return project_name, page
+        return project_name, page, None
     except Exception as error:
-        logger.debug("Unable to retrieve DaVinci Resolve state: %s", error)
-        return "No Project Open", "Editing"
+        return "No Project Open", "Editing", (
+            f"Unable to retrieve DaVinci Resolve state: {error}"
+        )
 
 
 def is_resolve_running():
@@ -95,6 +99,7 @@ class DaVinciPresence:
         self.resolve_was_running = False
         self.session_start = None
         self.last_payload = None
+        self.last_activity_error = None
 
     def connect(self):
         if self.connected:
@@ -130,6 +135,7 @@ class DaVinciPresence:
             self.resolve_was_running = False
             self.session_start = None
             self.last_payload = None
+            self.last_activity_error = None
             return
 
         if not self.resolve_was_running:
@@ -141,7 +147,13 @@ class DaVinciPresence:
         if not self.connect():
             return
 
-        project_name, page = get_resolve_activity()
+        project_name, page, activity_error = get_resolve_activity()
+        if activity_error and activity_error != self.last_activity_error:
+            logger.warning(activity_error)
+        elif not activity_error:
+            if self.last_activity_error:
+                logger.info("DaVinci Resolve scripting is accessible again.")
+        self.last_activity_error = activity_error
         payload = {
             "details": f"Project: {project_name}",
             "state": f"{page} workspace",

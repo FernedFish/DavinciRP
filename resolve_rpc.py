@@ -2,6 +2,8 @@ import logging
 import os
 import sys
 import time
+import importlib
+from pathlib import Path
 
 import psutil
 from pypresence import Presence
@@ -9,6 +11,7 @@ from pypresence import Presence
 
 CLIENT_ID = "1565356399775580230"
 UPDATE_INTERVAL_SECONDS = 15
+SCRIPT_RETRY_SECONDS = 30
 
 logging.basicConfig(
     level=logging.INFO,
@@ -17,41 +20,189 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def configure_resolve_paths():
-    """Configure the Resolve scripting library and modules path."""
+def first_existing_file(candidates):
+    """Return the first existing file from an ordered list of paths."""
+    for candidate in candidates:
+        if candidate:
+            path = Path(candidate).expanduser()
+            if path.is_file():
+                return path.resolve()
+    return None
+
+
+def running_resolve_executables():
+    """Find installed Resolve executable paths without assuming one install location."""
+    executables = []
+    try:
+        for proc in psutil.process_iter(["exe", "name"]):
+            try:
+                name = (proc.info.get("name") or "").lower()
+                executable = proc.info.get("exe")
+                if executable and (
+                    name.startswith("resolve")
+                    or Path(executable).name.lower() == "resolve.exe"
+                ):
+                    executables.append(Path(executable))
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+    except psutil.Error:
+        pass
+    return executables
+
+
+def discover_resolve_paths():
+    """Discover the Resolve library and Python scripting modules paths."""
+    running_executables = running_resolve_executables()
+    candidates = []
+
     if sys.platform.startswith("win"):
-        default_library = r"C:\Program Files\Blackmagic Design\DaVinci Resolve\fusionscript.dll"
-        default_modules = r"C:\ProgramData\Blackmagic Design\DaVinci Resolve\Support\Developer\Scripting\Modules"
+        library_name = "fusionscript.dll"
+        for executable in running_executables:
+            candidates.append(executable.parent / library_name)
+        candidates.extend([
+            Path(os.environ["PROGRAMFILES"]) / "Blackmagic Design" / "DaVinci Resolve" / library_name
+            if os.environ.get("PROGRAMFILES") else None,
+            Path(os.environ["PROGRAMFILES(X86)"]) / "Blackmagic Design" / "DaVinci Resolve" / library_name
+            if os.environ.get("PROGRAMFILES(X86)") else None,
+        ])
+        try:
+            for base in (
+                Path(os.environ["PROGRAMFILES"]) / "Blackmagic Design"
+                if os.environ.get("PROGRAMFILES") else None,
+                Path("C:/Program Files/Blackmagic Design"),
+            ):
+                if base and base.is_dir():
+                    candidates.extend(base.glob("DaVinci Resolve*/" + library_name))
+        except (OSError, KeyError):
+            pass
+
+        module_candidates = [
+            Path(os.environ["PROGRAMDATA"]) / "Blackmagic Design" / "DaVinci Resolve"
+            / "Support" / "Developer" / "Scripting" / "Modules"
+            if os.environ.get("PROGRAMDATA") else None,
+            Path("C:/ProgramData/Blackmagic Design/DaVinci Resolve/Support/Developer/Scripting/Modules"),
+        ]
+        for executable in running_executables:
+            module_candidates.append(
+                executable.parent.parent / "Support" / "Developer" / "Scripting" / "Modules"
+            )
     elif sys.platform == "darwin":
-        default_library = "/Applications/DaVinci Resolve/DaVinci Resolve.app/Contents/Libraries/Fusion/fusionscript.so"
-        default_modules = "/Library/Application Support/Blackmagic Design/DaVinci Resolve/Developer/Scripting/Modules"
+        library_name = "fusionscript.so"
+        candidates.extend([
+            Path("/Applications/DaVinci Resolve/DaVinci Resolve.app/Contents/Libraries/Fusion") / library_name,
+            Path("/Applications/DaVinci Resolve Studio/DaVinci Resolve Studio.app/Contents/Libraries/Fusion") / library_name,
+        ])
+        module_candidates = [
+            Path("/Library/Application Support/Blackmagic Design/DaVinci Resolve/Developer/Scripting/Modules"),
+        ]
+        for executable in running_executables:
+            resolve_app = Path(executable)
+            while resolve_app.name and resolve_app.suffix != ".app":
+                resolve_app = resolve_app.parent
+            if resolve_app.suffix == ".app":
+                candidates.append(resolve_app / "Contents/Libraries/Fusion" / library_name)
+                module_candidates.append(
+                    resolve_app / "Contents/Resources/Developer/Scripting/Modules"
+                )
     else:
-        default_library = "/opt/resolve/libs/Fusion/fusionscript.so"
-        default_modules = "/opt/resolve/Developer/Scripting/Modules"
+        library_name = "fusionscript.so"
+        candidates.extend([
+            Path("/opt/resolve/libs/Fusion") / library_name,
+            Path("/opt/resolve/Developer/Shared/Libraries/fusionscript.so"),
+        ])
+        module_candidates = [
+            Path("/opt/resolve/Developer/Scripting/Modules"),
+        ]
 
-    library = os.environ.get("RESOLVE_SCRIPT_LIB", default_library)
-    modules = os.environ.get("RESOLVE_SCRIPT_MODULES", default_modules)
-    os.environ["RESOLVE_SCRIPT_LIB"] = library
+    environment_library = os.environ.get("RESOLVE_SCRIPT_LIB")
+    environment_modules = os.environ.get("RESOLVE_SCRIPT_MODULES")
+    if environment_library:
+        candidates.insert(0, Path(environment_library).expanduser())
+    if environment_modules:
+        module_candidates.insert(0, Path(environment_modules).expanduser())
 
-    if modules not in sys.path:
-        sys.path.append(modules)
+    library = first_existing_file(candidates)
+    modules = first_existing_file([
+        candidate / "DaVinciResolveScript.py"
+        if candidate else None
+        for candidate in module_candidates
+    ])
+
+    if modules:
+        modules = modules.parent
+
+    return library, modules
 
 
-configure_resolve_paths()
+dvr_script = None
+dvr_script_error = None
+dvr_script_last_attempt = 0
 
-try:
-    import DaVinciResolveScript as dvr_script
-except ImportError as error:
-    logger.warning("DaVinci Resolve scripting modules are unavailable: %s", error)
-    dvr_script = None
+
+def load_resolve_script(force=False):
+    """Load or retry DaVinciResolveScript with discovered and overridden paths."""
+    global dvr_script, dvr_script_error, dvr_script_last_attempt
+
+    now = time.monotonic()
+    if dvr_script is not None:
+        return dvr_script, None
+    if not force and now - dvr_script_last_attempt < SCRIPT_RETRY_SECONDS:
+        return None, dvr_script_error
+    dvr_script_last_attempt = now
+
+    library, modules = discover_resolve_paths()
+
+    if modules is None:
+        dvr_script_error = (
+            "DaVinci Resolve scripting modules were not found. "
+            "Install or repair the Resolve scripting support files."
+        )
+        return None, dvr_script_error
+
+    if library is None:
+        dvr_script_error = (
+            "The Resolve fusionscript library was not found. "
+            "Set RESOLVE_SCRIPT_LIB to its full DLL/SO path."
+        )
+        return None, dvr_script_error
+
+    os.environ["RESOLVE_SCRIPT_LIB"] = str(library)
+    module_dir = str(modules)
+    if module_dir not in sys.path:
+        sys.path.insert(0, module_dir)
+
+    try:
+        importlib.invalidate_caches()
+        if "DaVinciResolveScript" in sys.modules:
+            del sys.modules["DaVinciResolveScript"]
+        loaded_module = importlib.import_module("DaVinciResolveScript")
+        scriptapp = getattr(loaded_module, "scriptapp", None)
+        if not callable(scriptapp):
+            raise AttributeError("The scripting module has no scriptapp() function")
+        dvr_script = loaded_module
+        dvr_script_error = None
+        logger.info("Loaded Resolve scripting from %s", modules)
+        return dvr_script, None
+    except Exception as error:
+        dvr_script_error = (
+            f"Could not load DaVinciResolveScript from {modules}: "
+            f"{type(error).__name__}: {error}"
+        )
+        logger.warning(dvr_script_error)
+        return None, dvr_script_error
 
 def get_resolve_activity():
     """Return the current project name and Resolve page, if available."""
-    if dvr_script is None:
-        return "No Project Open", "Editing", "Resolve scripting module unavailable"
+    script_module, module_error = load_resolve_script()
+    if script_module is None:
+        return (
+            "No Project Open",
+            "Editing",
+            module_error or "Resolve scripting module unavailable",
+        )
 
     try:
-        resolve = dvr_script.scriptapp("Resolve")
+        resolve = script_module.scriptapp("Resolve")
         if not resolve:
             return "No Project Open", "Editing", (
                 "Resolve scripting is not accessible. Enable External scripting in "
@@ -80,14 +231,21 @@ def is_resolve_running():
     """Return whether a DaVinci Resolve process is active."""
     if sys.platform.startswith("win"):
         process_name = "resolve.exe"
+    elif sys.platform == "darwin":
+        process_name = "resolve"
     else:
         process_name = "resolve"
 
     try:
         for proc in psutil.process_iter(["name"]):
-            name = proc.info.get("name")
-            if name and name.lower() == process_name:
-                return True
+            try:
+                name = (proc.info.get("name") or "").lower()
+                if name == process_name or (
+                    sys.platform.startswith("win") and name.startswith("resolve")
+                ):
+                    return True
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
     except psutil.Error as error:
         logger.debug("Unable to inspect process list: %s", error)
     return False
@@ -178,6 +336,9 @@ class DaVinciPresence:
 
 def main():
     logger.info("Starting DaVinci Resolve Discord Rich Presence.")
+    _, script_error = load_resolve_script(force=True)
+    if script_error:
+        logger.warning(script_error)
     presence = DaVinciPresence()
 
     try:

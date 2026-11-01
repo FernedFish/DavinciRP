@@ -9,7 +9,7 @@ import psutil
 from pypresence import Presence
 
 
-CLIENT_ID = "1565356399775580230"
+CLIENT_ID = "1565356399775580230" #application ID of the discord app
 UPDATE_INTERVAL_SECONDS = 15
 SCRIPT_RETRY_SECONDS = 30
 
@@ -17,7 +17,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__) #singleton looger 
 
 
 def first_existing_file(candidates):
@@ -86,24 +86,6 @@ def discover_resolve_paths():
             module_candidates.append(
                 executable.parent.parent / "Support" / "Developer" / "Scripting" / "Modules"
             )
-    elif sys.platform == "darwin":
-        library_name = "fusionscript.so"
-        candidates.extend([
-            Path("/Applications/DaVinci Resolve/DaVinci Resolve.app/Contents/Libraries/Fusion") / library_name,
-            Path("/Applications/DaVinci Resolve Studio/DaVinci Resolve Studio.app/Contents/Libraries/Fusion") / library_name,
-        ])
-        module_candidates = [
-            Path("/Library/Application Support/Blackmagic Design/DaVinci Resolve/Developer/Scripting/Modules"),
-        ]
-        for executable in running_executables:
-            resolve_app = Path(executable)
-            while resolve_app.name and resolve_app.suffix != ".app":
-                resolve_app = resolve_app.parent
-            if resolve_app.suffix == ".app":
-                candidates.append(resolve_app / "Contents/Libraries/Fusion" / library_name)
-                module_candidates.append(
-                    resolve_app / "Contents/Resources/Developer/Scripting/Modules"
-                )
     else:
         library_name = "fusionscript.so"
         candidates.extend([

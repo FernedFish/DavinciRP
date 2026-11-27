@@ -9,15 +9,50 @@ import psutil
 from pypresence import Presence
 
 
-CLIENT_ID = "1565356399775580230" #application ID of the discord app
-UPDATE_INTERVAL_SECONDS = 15
-SCRIPT_RETRY_SECONDS = 30
+DEFAULT_CLIENT_ID = "1565356399775580230"
+DEFAULT_UPDATE_INTERVAL_SECONDS = 15
+DEFAULT_SCRIPT_RETRY_SECONDS = 30
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
-logger = logging.getLogger(__name__) #singleton looger 
+logger = logging.getLogger(__name__)
+
+
+def get_positive_int_setting(name, default):
+    """Return a positive integer environment setting or its default value."""
+    raw_value = os.environ.get(name)
+    if raw_value is None:
+        return default
+
+    try:
+        value = int(raw_value)
+        if value > 0:
+            return value
+    except ValueError:
+        pass
+
+    logger.warning(
+        "Ignoring invalid %s=%r; using default value %s.",
+        name,
+        raw_value,
+        default,
+    )
+    return default
+
+
+CLIENT_ID = os.environ.get("DAVINCI_RPC_CLIENT_ID", DEFAULT_CLIENT_ID).strip()
+if not CLIENT_ID:
+    logger.warning("DAVINCI_RPC_CLIENT_ID is empty; using the default client ID.")
+    CLIENT_ID = DEFAULT_CLIENT_ID
+
+UPDATE_INTERVAL_SECONDS = get_positive_int_setting(
+    "DAVINCI_RPC_UPDATE_INTERVAL_SECONDS", DEFAULT_UPDATE_INTERVAL_SECONDS
+)
+SCRIPT_RETRY_SECONDS = get_positive_int_setting(
+    "DAVINCI_RPC_SCRIPT_RETRY_SECONDS", DEFAULT_SCRIPT_RETRY_SECONDS
+)
 
 
 def first_existing_file(candidates):
@@ -219,11 +254,15 @@ def is_resolve_running():
         process_name = "resolve"
 
     try:
-        for proc in psutil.process_iter(["name"]):
+        for proc in psutil.process_iter(["name", "exe"]):
             try:
                 name = (proc.info.get("name") or "").lower()
-                if name == process_name or (
-                    sys.platform.startswith("win") and name.startswith("resolve")
+                executable = proc.info.get("exe")
+                executable_name = (
+                    Path(executable).name.lower() if executable else None
+                )
+                if name == process_name and (
+                    executable_name is None or executable_name == process_name
                 ):
                     return True
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):

@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "davinci-rp"
+version = "0.1.0"
+description = "Discord Rich Presence integration for DaVinci Resolve"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "psutil>=5.9,<8",
+    "pypresence>=4.3,<5",
+]
+
+[project.scripts]
+davinci-rp = "resolve_rpc:main"
+
+[tool.setuptools]
+py-modules = ["resolve_rpc"]
